@@ -1,10 +1,40 @@
+
+typedef enum {
+    LINUX,
+    WINDOWS,
+} System;
+
+typedef enum {
+    DEBUG,
+    RELEASE,
+} Mode;
+
+typedef struct Script  Script;
+typedef struct Target  Target;
+typedef struct Library Library;
+typedef void (*TargetFunc)(Target*, Mode, System);
+typedef void (*LibraryFunc)(Library*, Mode, System);
+
+void plugTarget(Script *S, const char *name, const char *file, TargetFunc func);
+void defaultTarget(Script *S, const char *name);
+
+void targetDesc(Target *T, const char *desc);
+void sourceDir(Target *T, const char *dir);
+void compileFlags(Target *T, const char *flags);
+void plugLibrary(Target *T, LibraryFunc func, const char *dir);
+
+void includeDir(Library *L, const char *dir);
+void libraryDir(Library *L, const char *dir);
+void linkFlags(Library *L, const char *flags);
+
+void script(Script *S, System OS);
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
 #include <dirent.h>
-#include "cbuild.h"
 
 #define COUNT_OF(X) (int) (sizeof(X) / sizeof((X)[0]))
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
@@ -365,6 +395,7 @@ bool targetExists(Script *S, const char *target)
 }
 
 typedef struct {
+    String output;
     StringList files;
     StringList incdirs;
     StringList libdirs;
@@ -375,12 +406,13 @@ typedef struct {
 
 void freeRecipe(Recipe *recipe)
 {
-    initString(&recipe->cflags);
-    initString(&recipe->lflags);
-    initStringList(&recipe->files);
-    initStringList(&recipe->incdirs);
-    initStringList(&recipe->libdirs);
-    initStringList(&recipe->srcdirs);
+    freeString(&recipe->output);
+    freeString(&recipe->cflags);
+    freeString(&recipe->lflags);
+    freeStringList(&recipe->files);
+    freeStringList(&recipe->incdirs);
+    freeStringList(&recipe->libdirs);
+    freeStringList(&recipe->srcdirs);
 }
 
 static void
@@ -406,10 +438,39 @@ printRecipeInfo(Recipe *recipe)
         fprintf(stdout, "\t%s\n", recipe->files.items[i]);
 }
 
+static void
+composeCommand(Recipe *recipe, String *dst)
+{
+    initString(dst);
+    appendString(dst, "gcc -o ");
+    appendString(dst, recipe->output.data);
+
+    for (int i = 0; i < recipe->files.count; i++) {
+        appendString(dst, " ");
+        appendString(dst, recipe->files.items[i]);
+    }
+
+    appendString(dst, " ");
+    appendString(dst, recipe->cflags.data);
+    appendString(dst, " ");
+    appendString(dst, recipe->lflags.data);
+    
+    for (int i = 0; i < recipe->incdirs.count; i++) {
+        appendString(dst, " -I");
+        appendString(dst, recipe->incdirs.items[i]);
+    }
+
+    for (int i = 0; i < recipe->libdirs.count; i++) {
+        appendString(dst, " -L");
+        appendString(dst, recipe->libdirs.items[i]);
+    }
+}
+
 static bool 
 getRecipe(Script *S, const char *target, Mode mode, 
           System OS, Recipe *recipe)
 {
+    initString(&recipe->output);
     initString(&recipe->cflags);
     initString(&recipe->lflags);
     initStringList(&recipe->files);
@@ -419,6 +480,8 @@ getRecipe(Script *S, const char *target, Mode mode,
 
     PTarget *PT = getPTarget(S, target);
     assert(PT != NULL);
+
+    appendString(&recipe->output, PT->file);    
 
     Target T;
     initString(&T.cflags);
@@ -503,25 +566,30 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to build target '%s' recipe\n", target);
         return -1;
     }
+    
+    String cmd;
+    composeCommand(&recipe, &cmd);
 
-    printRecipeInfo(&recipe);
-    /*
-    fprintf(stdout, "Command:\n\t%s\n", recipe.cmd.data);
+    if (config.verbose) {
+        printRecipeInfo(&recipe);
+        fprintf(stdout, "Command:\n\t%s\n", cmd.data);
+    }
 
-    FILE *stream = popen(recipe.cmd.data, "r");
+    FILE *stream = popen(cmd.data, "r");
     if (stream == NULL) {
+        freeRecipe(&recipe);
+        return -1;
     }
 
     char buffer[1024];
     while (1) {
         size_t num = fread(buffer, 1, sizeof(buffer), stream);
-        if (ferror(stream) || feof(stream))
+        if (feof(stream) || ferror(stream))
             break;
         fwrite(buffer, 1, num, stdout);
     }
 
     pclose(stream);
-    */
     freeRecipe(&recipe);
     return 0;
 }
